@@ -129,6 +129,22 @@ def tally_so_far(view, options):
     return t
 
 
+def wolf_protectors(view, me, role):
+    """Seats whose votes keep landing on village players: a wolf does that, so do its allies."""
+    clean = known_clean(view, me, role)
+    wolves = known_wolves(view, me, role)
+    hits = {}
+    for e in view["log"]:
+        if e["kind"] != "vote":
+            continue
+        tg = e.get("target")
+        if tg is None or e["seat"] == me:
+            continue
+        if tg in clean or (tg in wolves and False):
+            hits[e["seat"]] = hits.get(e["seat"], 0) + 1
+    return hits
+
+
 # ---------------------------------------------------------------- the decisions
 
 
@@ -185,8 +201,10 @@ def pick_vote(view, me, role, options):
     wagon = sorted(((t, n) for t, n in tally.items() if t in options), key=lambda kv: (-kv[1], kv[0]))
     if wagon and wagon[0][1] >= 2:
         return wagon[0][0]
+    # A seat whose votes keep exiling village players is the next best read.
+    shield = wolf_protectors(view, me, role)
     pool = [s for s in options if s not in clean] or list(options)
-    return max(pool, key=lambda s: (accused.get(s, 0.0), -talk.get(s, 0), -s))
+    return max(pool, key=lambda s: (shield.get(s, 0) * 0.6, accused.get(s, 0.0), -talk.get(s, 0), -s))
 
 
 def danger_scores(view, me, role):
@@ -236,7 +254,8 @@ def pick_protect(view, me, role, options):
     good = [s for s in options if s not in known_wolves(view, me, role)]
     if not good:
         return None
-    return max(good, key=lambda s: (talk.get(s, 0), accused.get(s, 0.0), -s))
+    danger = danger_scores(view, me, role)
+    return max(good, key=lambda s: (danger.get(s, 0.0), talk.get(s, 0), accused.get(s, 0.0), -s))
 
 
 def pick_inspect(view, me, role, options):
@@ -248,7 +267,9 @@ def pick_inspect(view, me, role, options):
     claimed = [s for s in fresh if s in claims]
     if claimed:
         return min(claimed)
-    return max(fresh, key=lambda s: (accused.get(s, 0.0), talk.get(s, 0), -s))
+    # A seat whose votes keep landing on village players is the likeliest wolf left.
+    shield = wolf_protectors(view, me, role)
+    return max(fresh, key=lambda s: (shield.get(s, 0), accused.get(s, 0.0), talk.get(s, 0), -s))
 
 
 def say(view, me, role):
@@ -277,20 +298,24 @@ def say(view, me, role):
         return None
 
     if role == "werewolf":
-        # Answer an accusation aimed at us, once, without heat; otherwise keep quiet.
+        # Answer an accusation aimed at us or at the partner, once, without heat; otherwise keep quiet.
         day = view["day"]
+        partner = (view["you"].get("partner") or {}).get("seat")
         aimed = []
         for e in view["log"]:
             if e["kind"] == "speech" and e["day"] == day and e["seat"] != me:
                 t = (e.get("text") or "").lower()
-                if WOLFISH.search(t) and ("seat %d" % me) in t:
+                if not WOLFISH.search(t):
+                    continue
+                if ("seat %d" % me) in t:
+                    aimed.append(e["seat"])
+                elif partner is not None and ("seat %d" % partner) in t:
                     aimed.append(e["seat"])
         if aimed:
-            n = len([p for p in view["players"] if p["alive"]])
             return (
-                "I have no night information, same as most of this table. I am a villager. "
-                "Seat %d is pushing a lynch on talk alone, which is what a wolf does on day one. "
-                "I will vote with the table, but not on a hunch." % aimed[0]
+                "I have no night information, same as most of this table. Seat %d is pushing a "
+                "lynch on talk alone, which is what a wolf does when it has nothing. I will "
+                "vote with the table, but not on a hunch." % aimed[0]
             )[:500]
         return None
 

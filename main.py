@@ -189,6 +189,20 @@ def pick_vote(view, me, role, options):
     return max(pool, key=lambda s: (accused.get(s, 0.0), -talk.get(s, 0), -s))
 
 
+def danger_scores(view, me, role):
+    """Who reads the table well: votes that landed on a wolf that is now known, and early seer claims."""
+    wolves = known_wolves(view, me, role)
+    d = {}
+    for e in view["log"]:
+        if e["kind"] == "vote" and e.get("target") in wolves and e["seat"] != me:
+            d[e["seat"]] = d.get(e["seat"], 0) + 2.0
+    for e in view["log"]:
+        if e["kind"] == "speech" and e["day"] <= 2 and e["seat"] != me:
+            if SEER_CLAIM.search(e.get("text") or ""):
+                d[e["seat"]] = d.get(e["seat"], 0) + 3.0
+    return d
+
+
 def pick_kill(view, me, role, options):
     if not options:
         return None
@@ -203,11 +217,12 @@ def pick_kill(view, me, role, options):
     good = [s for s in options if s not in known_wolves(view, me, role)]
     if not good:
         return None
-    # Kill the most credible village voice: a seer claim, then the loudest accuser.
+    # Kill the seat that reads the table best: it is the one that would hang the pack.
+    danger = danger_scores(view, me, role)
     claimed = [s for s in good if s in claims]
     if claimed:
-        return min(claimed)
-    return max(good, key=lambda s: (talk.get(s, 0), accused.get(s, 0.0), -s))
+        return max(claimed, key=lambda s: (danger.get(s, 0.0), talk.get(s, 0), -s))
+    return max(good, key=lambda s: (danger.get(s, 0.0), talk.get(s, 0), accused.get(s, 0.0), -s))
 
 
 def pick_protect(view, me, role, options):

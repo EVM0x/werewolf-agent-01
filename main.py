@@ -132,7 +132,6 @@ def tally_so_far(view, options):
 def wolf_protectors(view, me, role):
     """Seats whose votes keep landing on village players: a wolf does that, so do its allies."""
     clean = known_clean(view, me, role)
-    wolves = known_wolves(view, me, role)
     hits = {}
     for e in view["log"]:
         if e["kind"] != "vote":
@@ -140,7 +139,7 @@ def wolf_protectors(view, me, role):
         tg = e.get("target")
         if tg is None or e["seat"] == me:
             continue
-        if tg in clean or (tg in wolves and False):
+        if tg in clean:
             hits[e["seat"]] = hits.get(e["seat"], 0) + 1
     return hits
 
@@ -224,7 +223,7 @@ def danger_scores(view, me, role):
 def pick_kill(view, me, role, options):
     if not options:
         return None
-    night = view["day"] if view["phase"] == "night" else view["day"]
+    night = view["day"]  # a night vote is keyed by the day it follows
     mine = view.get("wolfVotes") or []
     partner = (view["you"].get("partner") or {}).get("seat")
     for v in mine:

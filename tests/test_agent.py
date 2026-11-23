@@ -68,6 +68,24 @@ class ReadTableTest(unittest.TestCase):
         _, accused, *_ = w.read_table(view(players=players, log=[speech(1, "budi looks shady")]))
         self.assertEqual(accused[2], 1.0)
 
+    def test_a_name_inside_a_longer_name_accuses_only_the_seat_named(self):
+        # "Budiman" contains "Budi"; only the seat that was actually named was
+        # accused, and crediting both moves the vote read by a whole point.
+        players = [player(1, "Ana"), player(2, "Budi"), player(3, "Budiman")]
+        _, accused, *_ = w.read_table(
+            view(players=players, log=[speech(1, "budiman looks shady")])
+        )
+        self.assertEqual(accused[3], 1.0)
+        self.assertEqual(accused[2], 0.0)
+
+    def test_a_name_inside_an_ordinary_word_accuses_nobody(self):
+        # "aliens" is not a mention of Ali.
+        players = [player(1, "Ana"), player(4, "Ali")]
+        _, accused, *_ = w.read_table(
+            view(players=players, log=[speech(1, "the aliens are shady")])
+        )
+        self.assertEqual(accused[4], 0.0)
+
     def test_a_seat_never_accuses_itself(self):
         _, accused, *_ = w.read_table(view(log=[speech(5, "seat 5 is the wolf")]))
         self.assertEqual(accused[5], 0.0)

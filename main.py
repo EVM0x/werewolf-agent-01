@@ -10,14 +10,22 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
 ENV = (os.environ.get("MAKEFUN_ENV_URL") or "").rstrip("/")
 
+# Seconds to wait before asking again when the env has nothing pending. Without
+# it the loop below is a `while True` around one HTTP call, which the first
+# version proved: 606 observes in a single second against an idle env.
+POLL_PAUSE = 0.5
+
 SEER_CLAIM = re.compile(r"\b(?:i\s*am|i'?m|im|me)\s+(?:the\s+|a\s+)?seer\b", re.I)
 WOLFISH = re.compile(r"\b(?:wolf|wolves|werewolf|suspicious|suspic|shady|liar|lying|lie|fake)\b", re.I)
-SEATREF = re.compile(r"\bseat\s*(\d)\b", re.I)
+# One or two digits: a 12-seat table names seats 10-12, and a single-digit
+# pattern silently drops every accusation aimed at them.
+SEATREF = re.compile(r"\bseat\s*(\d{1,2})\b", re.I)
 
 
 def post(path, body, timeout=30):
@@ -373,12 +381,19 @@ def main():
         st, obs = post("/observe", {}, timeout=30)
         if st != 200 or not isinstance(obs, dict):
             if st == 0:
+                # Transport failure: the env is restarting or the link dropped.
+                # Retry, but not at full speed — this is the same loop as the
+                # idle case, and a failed request costs the env a connection.
+                time.sleep(POLL_PAUSE)
                 continue
             sys.stderr.write("observe %s\n" % st)
             return 1
         if obs.get("done"):
             break
         pending = obs.get("pending") or []
+        if not pending:
+            time.sleep(POLL_PAUSE)
+            continue
         for p in pending:
             body = answer(p)
             st, _ = post("/act", body)
@@ -390,8 +405,6 @@ def main():
                 )
                 post("/act", fb)
             acted += 1
-        if not pending:
-            continue
     sys.stdout.write("werewolf seat: %d decisions answered\n" % acted)
     return 0
 

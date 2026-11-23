@@ -8,9 +8,15 @@ numbers as the only tie break.
 Run: python3 -m unittest discover -s tests -v
 """
 
+import contextlib
+import io
+import json
 import os
 import sys
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -94,6 +100,26 @@ class ReadTableTest(unittest.TestCase):
         log = [{"kind": "dawn", "died": None, "role": "villager", "day": 2}]
         *_, died = w.read_table(view(log=log))
         self.assertEqual(died, [])
+
+    def test_a_two_digit_seat_can_be_accused(self):
+        # A 12-seat table: seats 10-12 are votable, so an accusation aimed at
+        # one has to score like any other.
+        players = [player(i, "Seat%d" % i) for i in range(1, 13)]
+        for seat in (10, 11, 12):
+            _, accused, *_ = w.read_table(
+                view(players=players, log=[speech(5, "seat %d is a wolf" % seat)])
+            )
+            self.assertEqual(accused[seat], 1.0, seat)
+
+    def test_a_seat_reference_does_not_swallow_a_longer_number(self):
+        # "seat 1" is a prefix of "seat 11"; only the seat actually named may
+        # be credited.
+        players = [player(i, "Seat%d" % i) for i in range(1, 13)]
+        _, accused, *_ = w.read_table(
+            view(players=players, log=[speech(5, "seat 11 is a wolf")])
+        )
+        self.assertEqual(accused[1], 0.0)
+        self.assertEqual(accused[11], 1.0)
 
 
 class KnowledgeTest(unittest.TestCase):
@@ -302,6 +328,101 @@ class AnswerTest(unittest.TestCase):
             out = w.answer(p)
             self.assertEqual(out["decision"], kind)
             self.assertIn(out["target"], [3, 4, None])
+
+
+def stub_env():
+    """A local /observe that answers `pending: []` until the caller says done."""
+    state = {"n": 0, "done": False}
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            state["n"] += 1
+            body = json.dumps({"done": state["done"], "pending": []}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, state
+
+
+class RunLoopTest(unittest.TestCase):
+    """The observe loop: what it does with an env that has nothing waiting.
+
+    Both cases here are the same mistake — a `while True` around one HTTP call
+    with no pause — so both are bounded by the same measurement: how many
+    requests the loop makes in a window it should be sleeping through.
+    """
+
+    def setUp(self):
+        self._pause = w.POLL_PAUSE
+        self.addCleanup(setattr, w, "POLL_PAUSE", self._pause)
+        w.POLL_PAUSE = 0.02
+        old_env = w.ENV
+        self.addCleanup(setattr, w, "ENV", old_env)
+        # main() refuses to start without one; the address itself is never used
+        # here because each test replaces the transport underneath it.
+        w.ENV = "http://127.0.0.1:9"
+
+    @staticmethod
+    def _run_quietly():
+        # main() reports its decision count on stdout; the tests only care
+        # about the exit code.
+        with contextlib.redirect_stdout(io.StringIO()):
+            return w.main()
+
+    def test_an_idle_env_is_not_polled_in_a_hot_loop(self):
+        srv, state = stub_env()
+        self.addCleanup(srv.shutdown)
+        old_env = w.ENV
+        self.addCleanup(setattr, w, "ENV", old_env)
+        w.ENV = "http://127.0.0.1:%d" % srv.server_address[1]
+
+        rc = {}
+        t = threading.Thread(
+            target=lambda: rc.setdefault("v", self._run_quietly()), daemon=True
+        )
+        t.start()
+        time.sleep(0.3)
+        seen = state["n"]
+        state["done"] = True
+        t.join(5)
+
+        # 0.02 s per pause is ~15 calls in 0.3 s. The shipped loop answered 606
+        # observes in one second against an env with nothing pending.
+        self.assertLessEqual(seen, 25, "%d observes in 0.3 s" % seen)
+        self.assertEqual(rc.get("v"), 0)
+
+    def test_a_transport_failure_is_retried_with_a_pause(self):
+        calls = {"n": 0}
+        stop = {"v": False}
+
+        def dead_env(path, body, timeout=30):
+            calls["n"] += 1
+            return (0, {}) if not stop["v"] else (200, {"done": True})
+
+        old_post = w.post
+        self.addCleanup(setattr, w, "post", old_post)
+        w.post = dead_env
+
+        rc = {}
+        t = threading.Thread(
+            target=lambda: rc.setdefault("v", self._run_quietly()), daemon=True
+        )
+        t.start()
+        time.sleep(0.3)
+        seen = calls["n"]
+        stop["v"] = True
+        t.join(5)
+
+        self.assertLessEqual(seen, 25, "%d retries in 0.3 s" % seen)
+        self.assertEqual(rc.get("v"), 0)
 
 
 if __name__ == "__main__":

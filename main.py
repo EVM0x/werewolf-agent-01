@@ -52,6 +52,14 @@ def read_table(view):
     """What the public log says: seer claims, who accuses whom, who talks, vote history."""
     players = view["players"]
     by_name = {p["name"].lower(): p["seat"] for p in players}
+    # A name is a word in the sentence, not a run of letters inside one:
+    # "Budiman" must not also accuse Budi, and "aliens" must not accuse Ali.
+    # The lookarounds do that for names that end in punctuation as well.
+    name_re = {
+        nm: re.compile(r"(?<!\w)%s(?!\w)" % re.escape(nm))
+        for nm in by_name
+        if len(nm) > 2
+    }
     claims = []
     accused = {p["seat"]: 0.0 for p in players}
     talk = {p["seat"]: 0 for p in players}
@@ -63,6 +71,7 @@ def read_table(view):
         if k == "speech":
             s = e["seat"]
             t = e.get("text") or ""
+            low = t.lower()
             talk[s] = talk.get(s, 0) + 1
             if SEER_CLAIM.search(t):
                 claims.append(s)
@@ -73,9 +82,9 @@ def read_table(view):
                     if n in accused and n != s:
                         accused[n] += 1.0
                         hit = True
-                low = t.lower()
-                for nm, seat in by_name.items():
-                    if seat != s and len(nm) > 2 and nm in low:
+                for nm, pat in name_re.items():
+                    seat = by_name[nm]
+                    if seat != s and pat.search(low):
                         accused[seat] += 1.0
                         hit = True
                 if hit:
